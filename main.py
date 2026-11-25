@@ -107,7 +107,8 @@ async def home():
   <div class="mt-5 bg-white p-5 rounded-2xl border">
     <div class="flex justify-between items-center mb-3">
       <h2 class="font-semibold">Son Teslimatlar</h2>
-      <button onclick="sync()" class="text-sm bg-slate-800 text-white px-3 py-1 rounded">Sheets Senkron</button>
+      <button onclick="importData()" class="text-sm bg-emerald-700 text-white px-3 py-1 rounded">Sheets’ten Veri Çek</button>
+      <button onclick="sync()" class="text-sm bg-slate-800 text-white px-3 py-1 rounded">Sheets’e Yaz</button>
     </div>
     <div id="list" class="text-sm"></div>
   </div>
@@ -137,10 +138,11 @@ async function ai(){
   chat.innerHTML += `<div class="text-emerald-700 mb-2"><b>AI:</b> ${j.reply}</div>`;
   msg.value=''; chat.scrollTop=chat.scrollHeight;
 }
-async function sync(){
-  const r = await fetch('/api/sync/sheets',{method:'POST'});
+async function importData(){
+  const r = await fetch('/api/sync/import',{method:'POST'});
   const j = await r.json();
-  alert(j.status==='ok' ? 'Sheets güncellendi' : 'Hata: '+j.error);
+  alert(j.status==='ok' ? 'Veriler çekildi: ' + JSON.stringify(j.imported) : 'Hata: '+j.error);
+  refresh();
 }
 refresh();
 </script>
@@ -220,25 +222,52 @@ def get_client():
     except:
         return None
 
-@app.post("/api/sync/sheets")
-async def sync_sheets():
+@app.post("/api/sync/import")
+async def import_from_sheets():
+    """Mevcut Sheets verilerini sisteme yükle"""
     client = get_client()
     if not client:
-        return {"status":"hata","error":"Sheets bağlantısı yok"}
+        return {"status": "hata", "error": "Sheets bağlantısı yok"}
     try:
         sh = client.open_by_key(SHEET_ID)
+        imported = {"deliveries": 0, "customers": 0, "sales": 0}
+
         # Teslimatlar
         try:
-            ws = sh.worksheet("Teslimatlar_Pro")
+            ws = sh.worksheet("Teslimatlar")
+            rows = ws.get_all_records()
+            for row in rows[-100:]:  # son 100
+                deliveries.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "customer_name": row.get("Müşteri") or row.get("Musteri") or row.get("customer") or "Bilinmiyor",
+                    "address": row.get("Adres") or row.get("address") or "",
+                    "items": row.get("Ürünler") or row.get("Urunler") or row.get("items") or "",
+                    "status": row.get("Durum") or "tamamlandı",
+                    "created": str(row.get("Tarih") or row.get("Zaman") or "")
+                })
+                imported["deliveries"] += 1
+        except Exception as e:
+            log(f"Teslimatlar okunamadı: {e}")
+
+        # Musteriler
+        try:
+            ws = sh.worksheet("Musteriler")
+            rows = ws.get_all_records()
+            for row in rows[-50:]:
+                customers.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "name": row.get("Ad") or row.get("Müşteri") or row.get("Isim") or "Bilinmiyor",
+                    "phone": row.get("Telefon") or "",
+                    "address": row.get("Adres") or ""
+                })
+                imported["customers"] += 1
         except:
-            ws = sh.add_worksheet("Teslimatlar_Pro", 2000, 8)
-            ws.append_row(["ID","Müşteri","Adres","Ürünler","Durum","Tarih"])
-        for d in deliveries[-15:]:
-            ws.append_row([d.get("id"), d.get("customer_name"), d.get("address"), d.get("items"), d.get("status"), d.get("created")])
-        log("Sheets senkron yapıldı")
-        return {"status":"ok", "count": len(deliveries)}
+            pass
+
+        log(f"Sheets import tamam: {imported}")
+        return {"status": "ok", "imported": imported}
     except Exception as e:
-        return {"status":"hata", "error": str(e)}
+        return {"status": "hata", "error": str(e)}
 
 @app.get("/api/health")
 async def health():
